@@ -385,6 +385,154 @@ install_fixes() {
   echo_info "If this script has been helpful for you and you would like to support the work I do, consider donating to https://paypal.me/weirdtreething"
 }
 
+remove_shipped_file() {
+  local dest="$1"
+
+  if [ -e "$dest" ] || [ -L "$dest" ]; then
+    rm -f "$dest"
+    echo_info "Removed $dest"
+  fi
+}
+
+# Drop a firmware file only when it is still the blob this script copied.
+remove_matching_blob() {
+  local src="$1"
+  local dest="$2"
+
+  [ -f "$src" ] || return 0
+  [ -f "$dest" ] || return 0
+  if cmp -s "$src" "$dest"; then
+    rm -f "$dest"
+    echo_info "Removed $dest"
+    blob_removed=true
+  fi
+}
+
+remove_script_symlinks() {
+  local pattern link
+
+  for pattern in \
+    "/lib/firmware/intel/sof-tplg/sof-rpl-*.tplg" \
+    "/lib/firmware/intel/sof-tplg/sof-rpl-*.tplg.xz" \
+    "/lib/firmware/intel/sof-tplg/sof-rpl-*.tplg.zst" \
+    "/lib/firmware/intel/sof-tplg/sof-adl-max98360a-cs42l42.tplg" \
+    "/lib/firmware/intel/sof-tplg/sof-adl-max98360a-cs42l42.tplg.xz" \
+    "/lib/firmware/intel/sof-tplg/sof-adl-max98360a-cs42l42.tplg.zst"
+  do
+    compgen -G "$pattern" >/dev/null || continue
+    while IFS= read -r link; do
+      [ -L "$link" ] || continue
+      rm -f "$link"
+      echo_info "Removed $link"
+    done < <(compgen -G "$pattern")
+  done
+}
+
+# Quirk UCM files replace the ChromeOS profile this script already installed.
+# Put those stock files back. The distro's original tree is gone either way.
+restore_quirk_ucm() {
+  local dir card src name dest stock_ucm stock_over wrote found
+
+  found=false
+  for dir in conf/quirks/*/ucm/*/; do
+    [ -d "$dir" ] || continue
+    found=true
+  done
+  if ! $found; then
+    return 0
+  fi
+
+  echo_status "Restoring UCM files replaced by board quirks"
+  rm -r /tmp/alsa-ucm-conf-cros &>/dev/null
+  if ! git clone https://github.com/WeirdTreeThing/alsa-ucm-conf-cros \
+    --depth 1 \
+    $([ -n "$OVERRIDE_BRANCH" ] && echo "-b $OVERRIDE_BRANCH") \
+    /tmp/alsa-ucm-conf-cros &>/dev/null; then
+    echo_warning "Could not download alsa-ucm-conf-cros. Board UCM quirks were left in place."
+    return 0
+  fi
+
+  for dir in conf/quirks/*/ucm/*/; do
+    [ -d "$dir" ] || continue
+    card="$(basename "$dir")"
+    for src in "$dir"*; do
+      [ -f "$src" ] || continue
+      name="$(basename "$src")"
+      dest="/usr/share/alsa/ucm2/conf.d/$card/$name"
+      stock_ucm="/tmp/alsa-ucm-conf-cros/ucm2/conf.d/$card/$name"
+      stock_over="/tmp/alsa-ucm-conf-cros/overrides/$card/$name"
+      wrote=false
+      if [ -f "$stock_ucm" ]; then
+        cp "$stock_ucm" "$dest"
+        wrote=true
+      fi
+      if [ -f "$stock_over" ]; then
+        cp "$stock_over" "$dest"
+        wrote=true
+      fi
+      if $wrote; then
+        echo_info "Restored $dest"
+      else
+        remove_shipped_file "$dest"
+      fi
+    done
+  done
+  echo_warning "The ChromeOS UCM profile is still installed. Reinstall alsa-ucm-conf to restore the distro profiles."
+}
+
+remove_audio_fixes() {
+  local input f dir base
+
+  echo_warning "This removes the modprobe configs, WirePlumber fragments, and topology symlinks this script installed."
+  echo -en "${GREEN}Remove audio fixes? [y/N] ${RESET}"
+  read -re input
+  case $input in
+    y | Y) ;;
+    *) return 1 ;;
+  esac
+
+  blob_removed=false
+  for f in conf/avs/*.conf conf/sof/*.conf conf/common/snd-sst.conf; do
+    [ -f "$f" ] || continue
+    remove_shipped_file "/etc/modprobe.d/$(basename "$f")"
+  done
+
+  for f in conf/common/51-*.conf; do
+    [ -f "$f" ] || continue
+    remove_shipped_file "/etc/wireplumber/wireplumber.conf.d/$(basename "$f")"
+  done
+  remove_shipped_file /etc/wireplumber/main.lua.d/51-increase-headroom.lua
+  remove_shipped_file /etc/wireplumber/main.lua.d/51-avs-dmic.lua
+
+  for dir in conf/quirks/*/; do
+    [ -d "$dir" ] || continue
+    for f in "$dir"51-*.conf; do
+      [ -f "$f" ] || continue
+      remove_shipped_file "/etc/wireplumber/wireplumber.conf.d/$(basename "$f")"
+    done
+    for f in "$dir"*.lua; do
+      [ -f "$f" ] || continue
+      base="$(basename "$f")"
+      remove_shipped_file "/etc/wireplumber/scripts/$base"
+      remove_shipped_file "/usr/share/wireplumber/scripts/$base"
+    done
+  done
+
+  remove_script_symlinks
+  remove_matching_blob blobs/adl/sof-adl-rt1019-rt5682.tplg /lib/firmware/intel/sof-tplg/sof-adl-rt1019-rt5682.tplg
+  remove_matching_blob blobs/mtl/sof-mtl-rt5650.tplg /lib/firmware/intel/sof-ace-tplg/sof-mtl-rt5650.tplg
+  remove_matching_blob blobs/mtl/sof-mtl-rt1019-rt5682.tplg /lib/firmware/intel/sof-ace-tplg/sof-mtl-rt1019-rt5682.tplg
+  remove_matching_blob blobs/mdn/fw/sof-rmb.ri /lib/firmware/amd/sof/community/sof-rmb.ri
+  remove_matching_blob blobs/mdn/fw/sof-rmb.ldc /lib/firmware/amd/sof/community/sof-rmb.ldc
+  remove_matching_blob blobs/mdn/tplg/sof-rmb-rt5682s-rt1019.tplg /lib/firmware/amd/sof-tplg/sof-rmb-rt5682s-rt1019.tplg
+  if $blob_removed; then
+    echo_warning "Reinstall sof-firmware to restore the packaged topologies."
+  fi
+
+  restore_quirk_ucm
+  echo_status "Audio fixes removed. Reboot to finish."
+}
+
 ### MISC FUNCTIONS ###
 
 check_user_is_chud() {
@@ -435,6 +583,10 @@ install_downstream_tplg() {
     xz -c ${tplg} > ${dest}.xz
   elif [ -f "${dest}.zst" ]; then
     zstd ${tplg} -o ${dest}.zst
+  elif [ -d "$(dirname "${dest}")" ]; then
+    # Remove deletes a topology that matches our blob. Recreate it when the
+    # package directory is present but the file is gone.
+    cp ${tplg} ${dest}
   fi
 }
 
@@ -693,7 +845,10 @@ menu() {
       break
       ;;
     2)
-      menu_msg="Currently not implemented"
+      if remove_audio_fixes; then
+        break
+      fi
+      menu_msg="Cancelled"
       ;;
     3)
       menu_msg="Currently not implemented"
