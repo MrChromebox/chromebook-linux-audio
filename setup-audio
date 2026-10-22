@@ -533,6 +533,82 @@ remove_audio_fixes() {
   echo_status "Audio fixes removed. Reboot to finish."
 }
 
+invoking_user() {
+  if [ -n "${SUDO_USER:-}" ] && [ "$SUDO_USER" != "root" ]; then
+    echo "$SUDO_USER"
+  elif [ -n "${DOAS_USER:-}" ] && [ "$DOAS_USER" != "root" ]; then
+    echo "$DOAS_USER"
+  elif command -v loginctl >/dev/null 2>&1; then
+    loginctl list-users --no-legend 2>/dev/null | awk '$1 != 0 { print $2; exit }'
+  fi
+}
+
+user_systemctl() {
+  local user="$1"
+  local uid runtime
+  shift
+
+  uid="$(id -u "$user")"
+  runtime="/run/user/$uid"
+  [ -S "$runtime/bus" ] || return 1
+  if command -v runuser >/dev/null 2>&1; then
+    runuser -u "$user" -- env \
+      XDG_RUNTIME_DIR="$runtime" \
+      DBUS_SESSION_BUS_ADDRESS="unix:path=$runtime/bus" \
+      systemctl --user "$@"
+  else
+    su -s /bin/sh "$user" -c "export XDG_RUNTIME_DIR='$runtime' DBUS_SESSION_BUS_ADDRESS='unix:path=$runtime/bus'; systemctl --user $*"
+  fi
+}
+
+clear_audio_state() {
+  local input user home uid
+
+  echo_warning "This deletes saved mixer levels and WirePlumber routes, then restarts PipeWire."
+  echo -en "${GREEN}Clear audio state? [y/N] ${RESET}"
+  read -re input
+  case $input in
+    y | Y) ;;
+    *) return 1 ;;
+  esac
+
+  echo_status "Clearing saved audio state"
+  if [ -f /var/lib/alsa/asound.state ]; then
+    rm -f /var/lib/alsa/asound.state
+    echo_info "Removed /var/lib/alsa/asound.state"
+  fi
+  if command -v alsactl >/dev/null 2>&1; then
+    alsactl init &>/dev/null || true
+  fi
+
+  user="$(invoking_user)"
+  if [ -z "$user" ]; then
+    echo_warning "Could not find a desktop user. Reboot to finish clearing audio state."
+    return 0
+  fi
+
+  home="$(getent passwd "$user" | cut -d: -f6)"
+  uid="$(id -u "$user")"
+  if [ -S "/run/user/$uid/bus" ]; then
+    user_systemctl "$user" stop wireplumber pipewire-pulse pipewire || true
+  fi
+  if [ -d "$home/.local/state/wireplumber" ]; then
+    rm -rf "$home/.local/state/wireplumber"
+    echo_info "Removed $home/.local/state/wireplumber"
+  fi
+  if [ -d "$home/.local/state/pipewire" ]; then
+    rm -rf "$home/.local/state/pipewire"
+    echo_info "Removed $home/.local/state/pipewire"
+  fi
+  if [ -S "/run/user/$uid/bus" ]; then
+    echo_status "Restarting PipeWire for $user"
+    user_systemctl "$user" start pipewire pipewire-pulse wireplumber || true
+  else
+    echo_info "No user session is running. Reboot to finish."
+  fi
+  echo_status "Audio state cleared."
+}
+
 ### MISC FUNCTIONS ###
 
 check_user_is_chud() {
@@ -851,7 +927,10 @@ menu() {
       menu_msg="Cancelled"
       ;;
     3)
-      menu_msg="Currently not implemented"
+      if clear_audio_state; then
+        break
+      fi
+      menu_msg="Cancelled"
       ;;
     4)
       menu_msg="Currently not implemented"
