@@ -667,38 +667,48 @@ usage() {
 }
 
 menu() {
-  clear
-  echo -e "${BLUE}WeirdTreeThing Chromebook Audio Script${RESET}"
-  echo -e " ${YELLOW}1) ${GREEN}Install audio fixes${RESET}"
-  echo -e " ${YELLOW}2) ${GREEN}Remove audio fixes${RESET}"
-  echo -e " ${YELLOW}3) ${GREEN}Clear audio state${RESET}"
-  echo -e " ${YELLOW}4) ${GREEN}Collect debugging logs${RESET}"
-  echo -e " ${YELLOW}5) ${GREEN}Exit${RESET}"
+  local opt menu_msg
 
-  echo -en "${BLUE} Selection: ${RESET}"
-  read -re opt
-  case $opt in
+  while true; do
+    clear
+    echo -e "${BLUE}WeirdTreeThing Chromebook Audio Script${RESET}"
+    echo -e " ${YELLOW}1) ${GREEN}Install audio fixes${RESET}"
+    echo -e " ${YELLOW}2) ${GREEN}Remove audio fixes${RESET}"
+    echo -e " ${YELLOW}3) ${GREEN}Clear audio state${RESET}"
+    echo -e " ${YELLOW}4) ${GREEN}Collect debugging logs${RESET}"
+    echo -e " ${YELLOW}5) ${GREEN}Exit${RESET}"
+    if [ -n "$menu_msg" ]; then
+      echo_error "$menu_msg"
+      menu_msg=
+    fi
 
-  1)
-    install_fixes
-    ;;
-  2)
-    echo_error "Currently not implemented"
-    ;;
-  3)
-    echo_error "Currently not implemented"
-    ;;
-  4)
-    echo_error "Currently not implemented"
-    ;;
-  5)
-    exit
-    ;;
-  *)
-    menu
-    ;;
-
-  esac
+    echo -en "${BLUE} Selection: ${RESET}"
+    if ! read -re opt; then
+      echo
+      exit 1
+    fi
+    case $opt in
+    1)
+      install_fixes
+      break
+      ;;
+    2)
+      menu_msg="Currently not implemented"
+      ;;
+    3)
+      menu_msg="Currently not implemented"
+      ;;
+    4)
+      menu_msg="Currently not implemented"
+      ;;
+    5)
+      exit
+      ;;
+    *)
+      menu_msg="Invalid selection"
+      ;;
+    esac
+  done
 }
 
 check_user_is_chud
