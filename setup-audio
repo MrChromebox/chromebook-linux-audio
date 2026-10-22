@@ -306,6 +306,47 @@ install_ucm() {
   cp -r /tmp/alsa-ucm-conf-cros/overrides/* /usr/share/alsa/ucm2/conf.d/
 }
 
+# Copy conf/<tree>/<card>/ over /usr/share/alsa/ucm2/conf.d/<card>/.
+install_ucm_tree() {
+  local src="$1"
+  local dir name
+
+  [ -d "$src" ] || return 0
+  for dir in "$src"/*/; do
+    [ -d "$dir" ] || continue
+    name="$(basename "$dir")"
+    mkdir -p "/usr/share/alsa/ucm2/conf.d/$name"
+    cp -r "$dir"* "/usr/share/alsa/ucm2/conf.d/$name/"
+  done
+}
+
+# conf/quirks/<product_name>/ holds UCM and WirePlumber files that are not
+# safe to apply to every board that shares a card profile. product_name is
+# lowercased, so Screebo matches conf/quirks/screebo/.
+install_board_quirks() {
+  local board dir
+
+  board="$(cat /sys/class/dmi/id/product_name 2>/dev/null | tr '[:upper:]' '[:lower:]')"
+  [ -n "$board" ] || return 0
+  dir="conf/quirks/$board"
+  [ -d "$dir" ] || return 0
+
+  echo_status "Installing audio quirks for $board"
+  install_ucm_tree "$dir/ucm"
+
+  if command -v wireplumber &>/dev/null; then
+    mkdir -p /etc/wireplumber/wireplumber.conf.d
+    mkdir -p /etc/wireplumber/scripts /usr/share/wireplumber/scripts
+    if compgen -G "$dir"/51-*.conf >/dev/null; then
+      cp "$dir"/51-*.conf /etc/wireplumber/wireplumber.conf.d/
+    fi
+    if compgen -G "$dir"/*.lua >/dev/null; then
+      cp "$dir"/*.lua /etc/wireplumber/scripts/
+      cp "$dir"/*.lua /usr/share/wireplumber/scripts/
+    fi
+  fi
+}
+
 install_fixes() {
   # Some distros (Solus) don't have /etc/modprobe.d/ for some reason
   mkdir -p /etc/modprobe.d
@@ -326,6 +367,8 @@ install_fixes() {
     mkdir -p /etc/wireplumber/wireplumber.conf.d
     cp conf/common/51-*.conf /etc/wireplumber/wireplumber.conf.d/
   fi
+
+  install_board_quirks
 
   # Sometimes the alsa save/restore service doesn't init the sound card for some reason, so do it here instead
   # This won't work for soundcards which don't currently exist, such as ones that need firmware installed
